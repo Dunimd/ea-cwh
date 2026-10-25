@@ -36,11 +36,22 @@ place.
 Entry contract (see :func:`validate_catalog`):
 
 * ``name`` is the plugin's manifest name (its registry identity).
+* ``display_name`` is a short human-friendly name shown to users — the
+  agent and the installer keep identifying the plugin by ``name`` alone.
 * ``pypi_package`` is the PyPI distribution to install and MUST carry the
   reserved namespace prefixes (``ea-plugin-``/``ea-tool-``/``ea-skill-``).
 * ``version`` is pinned — installs always resolve to exactly this version.
 * ``artifacts`` maps distribution file names to their ``sha256`` digest so
   the installer can verify what PyPI handed back before any code runs.
+* ``tier`` is ``user`` (community) or ``system-default`` (the vendor
+  pipeline) — it decides the activation gate after install.
+* ``min_encre_version`` is the oldest Encre Agent release the plugin
+  supports (what the manifest called ``min_ea_version``/``engines.encre``).
+* ``icon`` is a short render token — a lucide icon name, a single emoji,
+  or a file name inside the plugin wheel's ``ui/`` assets — never binary
+  data; bitmaps always travel in the plugin wheel, not in this index.
+* ``published_at`` is the ISO-8601 UTC stamp of the PyPI upload.
+* ``yanked`` is a boolean; yanked entries never surface as updates.
 """
 
 from __future__ import annotations
@@ -189,13 +200,43 @@ def validate_catalog(doc: Any) -> list[str]:
             value = entry.get(key, "")
             if not isinstance(value, str):
                 problems.append(f"{where}.{key} must be a string")
+        # ``icon`` is a render token (lucide name / single emoji / ui/ asset
+        # file name), not a bitmap — the wheel carries the binary.  A longer
+        # value can only be someone stuffing data into the index.
+        icon = entry.get("icon", "")
+        if isinstance(icon, str) and len(icon) > 128:
+            problems.append(
+                f"{where}.icon must be a short render token (<=128 chars); "
+                "binary icons belong in the plugin wheel's ui/ assets")
+        # ``display_name`` is the user-facing label; "short and easy to
+        # read" is part of the contract, so the index caps its length.
+        display_name = entry.get("display_name", "")
+        if not isinstance(display_name, str):
+            problems.append(f"{where}.display_name must be a string")
+        elif len(display_name) > 64:
+            problems.append(f"{where}.display_name must stay short (<=64 chars)")
+        tier = entry.get("tier", "user")
+        if tier not in ("user", "system-default"):
+            problems.append(f"{where}.tier must be 'user' or 'system-default'")
+        min_ver = entry.get("min_encre_version", "")
+        if not isinstance(min_ver, str) or (min_ver and not _VERSION_RE.match(min_ver)):
+            problems.append(f"{where}.min_encre_version must be a PEP 440 version string")
+        if not isinstance(entry.get("published_at", ""), str):
+            problems.append(f"{where}.published_at must be a string")
+        # A truthy non-bool (e.g. the string "false") would silently flip a
+        # live entry into the yanked bucket, so the type is enforced hard.
+        if not isinstance(entry.get("yanked", False), bool):
+            problems.append(f"{where}.yanked must be a boolean")
         for key in ("tags", "permissions"):
             value = entry.get(key, [])
             if not isinstance(value, list) or any(not isinstance(v, str) for v in value):
                 problems.append(f"{where}.{key} must be a list of strings")
         provides = entry.get("provides", {})
-        if not isinstance(provides, dict):
-            problems.append(f"{where}.provides must be an object")
+        if not isinstance(provides, dict) or any(
+            not isinstance(items, list) or any(not isinstance(i, str) for i in items)
+            for items in provides.values()
+        ):
+            problems.append(f"{where}.provides must map surface names to lists of strings")
         artifacts = entry.get("artifacts")
         if not isinstance(artifacts, dict) or not artifacts:
             problems.append(f"{where}.artifacts must be a non-empty object")
